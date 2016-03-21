@@ -1,5 +1,6 @@
 import scala.Tuple2;
 import twitter4j.Status;
+import util.TwitterConfigUtil;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -12,6 +13,7 @@ import java.util.Properties;
 import java.util.stream.Collectors;
 
 import org.apache.spark.SparkConf;
+import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.api.java.function.FlatMapFunction;
 import org.apache.spark.streaming.Minutes;
@@ -27,6 +29,7 @@ import org.joda.time.format.DateTimeFormat;
 import org.joda.time.format.DateTimeFormatter;
 
 import com.google.common.io.Files;
+import com.twitter.Extractor;
 
 /**
  * Author: Eric Na (hyunwoo.na@gmail.com), Date created: 3/18/16
@@ -35,8 +38,8 @@ import com.google.common.io.Files;
 public class TwitterHashtagCollector {
   private static final DateTimeFormatter dateTimeFormat = DateTimeFormat.forPattern("MM/dd/yyyy HH:mm:ss");
   private static final String timeZoneId = "America/Los_Angeles";
-  private static int streamBatchDurationInSec = 5;
-  private static int windowDurationInSec = 300;
+  private static int streamBatchDurationInSec = 300;
+  private static int windowDurationInSec = 300; //Top hashtags and tweets in 5 minutes
 
   //args[0]: full path to a textfile that contains a twitter login. See twitter4j.properties.template
   //args[1]: full path to a textfile to write hashtags and tweets to
@@ -46,7 +49,7 @@ public class TwitterHashtagCollector {
       System.exit(1);
     }
     String twitterCredentialFilePath = args[0];
-    setTwitterConfig(twitterCredentialFilePath);
+    TwitterConfigUtil.setTwitterConfig(twitterCredentialFilePath);
     String outputFilePath = args[1];
 
     SparkConf conf = new SparkConf().setAppName("TwitterHashtagCollector").setMaster("local[*]");
@@ -70,16 +73,13 @@ public class TwitterHashtagCollector {
         System.out.println("Shutdown of streaming app complete.");
       }
     });
-
-    jssc.start();
+    jssc.start(); // Start the computation
     jssc.awaitTermination();
   }
 
   //Takes a Twitter stream, gets the {numTopHashtags} hashtags with the highest counts, and write to {file}
   private static void writeTopHashtagsToFile(File file, JavaReceiverInputDStream<Status> twitterStream,
                                              int numTopHashtags) {
-    DateTime currentTime = DateTime.now(DateTimeZone.forID(timeZoneId));
-
     JavaDStream<String> statusTextsWithHashtag = twitterStream
         .map(Status::getText)
         .filter(statusText -> statusText.contains("#")); //filter out tweets without hashtag
@@ -101,21 +101,27 @@ public class TwitterHashtagCollector {
         .transformToPair(rdd -> rdd.sortByKey(false)); //sort in descending order
 
     countAndHashtagDescendingOrdered.foreachRDD(rdd -> {
-      String timeRange = dateTimeFormat.print(currentTime.minusSeconds(windowDurationInSec))
-          + " to " + dateTimeFormat.print(currentTime) + " (Pacific Time)";
-      Files.append("Top " + numTopHashtags + " hashtags captured from " + timeRange + ":\n",
-          file, Charset.forName("UTF-8"));
+      writeHashtagsToFile(file, numTopHashtags, rdd);
+    });
+  }
 
-      // Get top {numTopHashtags} hashtags as (count, hashtag) tuple.
-      List<Tuple2<Long, String>> topHashtags = rdd.take(numTopHashtags);
-      topHashtags.forEach(countAndHashtag -> {
-        try {
-          // write count and hashtag to the end of file
-          Files.append(countAndHashtag.toString() + "\n", file, Charset.forName("UTF-8"));
-        } catch (IOException e) {
-          System.err.println("error while writing output to file");
-        }
-      });
+  private static void writeHashtagsToFile(File file, int numTopHashtags,
+                                          JavaPairRDD<Long, String> hashtagRDD) throws IOException {
+    DateTime currentTime = DateTime.now(DateTimeZone.forID(timeZoneId));
+    String timeRange = dateTimeFormat.print(currentTime.minusSeconds(windowDurationInSec))
+        + " to " + dateTimeFormat.print(currentTime) + " (Pacific Time)";
+    Files.append("Top " + numTopHashtags + " hashtags captured from " + timeRange + ":\n",
+        file, Charset.forName("UTF-8"));
+
+    // Get top {numTopHashtags} hashtags as (count, hashtag) tuple.
+    List<Tuple2<Long, String>> topHashtags = hashtagRDD.take(numTopHashtags);
+    topHashtags.forEach(countAndHashtag -> {
+      try {
+        // write count and hashtag to the end of file
+        Files.append(countAndHashtag.toString() + "\n", file, Charset.forName("UTF-8"));
+      } catch (IOException e) {
+        System.err.println("error while writing output to file");
+      }
     });
   }
 
@@ -132,50 +138,27 @@ public class TwitterHashtagCollector {
         .transformToPair(rdd -> rdd.sortByKey(false)); //sort from the most retweeted tweets to the least retweeted ones
 
     retweetCountAndTextDescendingOrdered.foreachRDD(rdd -> {
-      Files.append(numTopTweets + " most retweeted Tweets in this time window:\n",
-          file, Charset.forName("UTF-8"));
-
-      // Get top {numTopTweets} tweets as (retweet count, tweet text) tuple.
-      List<Tuple2<Integer, String>> topTweets = rdd.take(numTopTweets);
-      topTweets.forEach(countAndTweet -> {
-        try {
-          //write the tweet count and text to the end of file
-          Files.append(countAndTweet._2 + " (retweeted " + countAndTweet._1 + " times)\n",
-              file, Charset.forName("UTF-8"));
-        } catch (IOException e) {
-          System.err.println("error while writing output to file");
-        }
-      });
-      Files.append("----------------------------------------------\n",
-          file, Charset.forName("UTF-8"));
+      writeTweetsToFile(file, numTopTweets, rdd);
     });
   }
 
-  // Reads properties file, gets the credentials, and sets them.
-  private static void setTwitterConfig(String configFilePath) {
-    Properties properties = new Properties();
-    InputStream configFile = null;
+  private static void writeTweetsToFile(File file, int numTopTweets,
+                                        JavaPairRDD<Integer, String> tweetsRdd) throws IOException {
+    Files.append(numTopTweets + " most retweeted Tweets in this time window:\n",
+        file, Charset.forName("UTF-8"));
 
-    try {
-      configFile = new FileInputStream(configFilePath);
-      properties.load(configFile);
-
-      //pass Twitter credentials as System Properties
-      System.setProperty("twitter4j.oauth.consumerKey", properties.getProperty("consumerKey"));
-      System.setProperty("twitter4j.oauth.consumerSecret", properties.getProperty("consumerSecret"));
-      System.setProperty("twitter4j.oauth.accessToken", properties.getProperty("accessToken"));
-      System.setProperty("twitter4j.oauth.accessTokenSecret", properties.getProperty("accessTokenSecret"));
-
-    } catch (IOException e) {
-      System.err.println("Error while reading twitter config file: " + e);
-    } finally {
-      if (configFile != null) {
-        try {
-          configFile.close();
-        } catch (IOException e) {
-          System.err.println("Error while closing twitter config file: " + e);
-        }
+    // Get top {numTopTweets} tweets as (retweet count, tweet text) tuple.
+    List<Tuple2<Integer, String>> topTweets = tweetsRdd.take(numTopTweets);
+    topTweets.forEach(countAndTweet -> {
+      try {
+        //write the tweet count and text to the end of file
+        Files.append(countAndTweet._2 + " (retweeted " + countAndTweet._1 + " times)\n",
+            file, Charset.forName("UTF-8"));
+      } catch (IOException e) {
+        System.err.println("error while writing output to file");
       }
-    }
+    });
+    Files.append("----------------------------------------------\n",
+        file, Charset.forName("UTF-8"));
   }
 }
