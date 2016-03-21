@@ -1,4 +1,4 @@
-package sentimental;
+package sentiment;
 
 import java.io.BufferedReader;
 import java.io.FileReader;

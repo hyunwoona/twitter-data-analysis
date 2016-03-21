@@ -1,13 +1,13 @@
-package sentimental;
+package sentiment;
 
 import scala.Tuple2;
 import twitter4j.GeoLocation;
 import twitter4j.Status;
 import util.TwitterConfigUtil;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.SQLException;
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.Charset;
 import java.util.Arrays;
 import java.util.List;
 
@@ -20,7 +20,7 @@ import org.apache.spark.streaming.api.java.JavaReceiverInputDStream;
 import org.apache.spark.streaming.api.java.JavaStreamingContext;
 import org.apache.spark.streaming.twitter.TwitterUtils;
 
-import com.mysql.jdbc.jdbc2.optional.MysqlDataSource;
+import com.google.common.io.Files;
 
 /**
  * Author: eric, Date created: 3/20/16
@@ -28,28 +28,26 @@ import com.mysql.jdbc.jdbc2.optional.MysqlDataSource;
 public class TwitterSentimentAnalyzer {
   private static SentiWordNet sentiWordNet = new SentiWordNet();
   private static final String englishIsoLanguageCode = "en";
-  //TODO: need to use a file instead of a DB, due to memory limit on free-tier Amazon EC2 machine. (can't run Spark there)
-  private static final Connection conn = getDBConnection("localhost", "spark", "yewno");
 
   public static void main(String[] args) {
-    if (args.length < 1) {
-      System.err.println("Usage: TwitterSentimentAnalyzer <Path to twitter credential file>");
+    if (args.length < 2) {
+      System.err.println("Usage: TwitterSentimentAnalyzer <Path to twitter credential file> <Output file path>");
       System.exit(1);
     }
-    if (conn == null) {
-      System.err.println("Cannot establish a connection to database. Quitting...");
-      System.exit(1);
-    }
+
     String twitterCredentialFilePath = args[0];
     TwitterConfigUtil.setTwitterConfig(twitterCredentialFilePath);
+    String outputFilePath = args[1];
 
     SparkConf conf = new SparkConf().setAppName("TwitterHashtagCollector").setMaster("local[*]");
     JavaSparkContext sc = new JavaSparkContext(conf);
-    final JavaStreamingContext jssc = new JavaStreamingContext(sc, Seconds.apply(10));
+    final JavaStreamingContext jssc = new JavaStreamingContext(sc, Seconds.apply(300));
 
     JavaReceiverInputDStream<Status> twitterStream = TwitterUtils.createStream(jssc);
 
-    getScoreAndWriteToDB(twitterStream);
+    File file = new File(outputFilePath);
+
+    getScoreAndWriteToFile(twitterStream, file);
 
     // handling the shut down gracefully
     Runtime.getRuntime().addShutdownHook(new Thread() {
@@ -63,15 +61,9 @@ public class TwitterSentimentAnalyzer {
     jssc.start(); // Start the computation
     jssc.awaitTermination();
 
-    try {
-      conn.close();
-    } catch (SQLException e) {
-      System.err.println("Error while closing MySQL db connection: " + e);
-    }
   }
 
-  //TODO: need to use a file instead of a DB, due to memory limit on free-tier Amazon EC2 machine. (can't run Spark there)
-  private static void getScoreAndWriteToDB(JavaReceiverInputDStream<Status> twitterStream) {
+  private static void getScoreAndWriteToFile(JavaReceiverInputDStream<Status> twitterStream, File file) {
     //Filter out tweets that are not written in English, and tweets not posted in US
     JavaDStream<Status> englishTweetsInUS = twitterStream
         .filter(status -> status.getGeoLocation() != null)
@@ -87,29 +79,19 @@ public class TwitterSentimentAnalyzer {
         .mapToPair(wordsAndGeoLocation ->
             new Tuple2<>(getSentimentScore(wordsAndGeoLocation._1), wordsAndGeoLocation._2));
 
+
     //write the result to database or file
     scoreAndGeoLocation.foreachRDD(rdd -> {
-      rdd.foreach(TwitterSentimentAnalyzer::writeToDatabase);
+      rdd.foreach(tuple -> {
+        try {
+          // write score and location to the end of file
+          Files.append(tuple._1 + "," + tuple._2.getLatitude() + "," + tuple._2.getLongitude() + "\n",
+              file, Charset.forName("UTF-8"));
+        } catch (IOException e) {
+          System.err.println("error while writing output to file");
+        }
+      });
     });
-  }
-
-  //TODO: need to use a file instead of a DB, due to memory limit on free-tier Amazon EC2 machine. (can't run Spark there)
-  private static void writeToDatabase(Tuple2<Double, GeoLocation> tuple) throws SQLException {
-    assert conn != null; //null check already done in main, but IntelliJ complains.
-    PreparedStatement st = conn.prepareStatement(
-        "INSERT INTO twitter.sentimentByState " +
-            " (sentimentScore, latitude, longitude) " +
-            "VALUES (?, ?, ?)");
-
-    double score = tuple._1;
-    double latitude = tuple._2.getLatitude();
-    double longitude = tuple._2.getLongitude();
-
-    st.setDouble(1, score);
-    st.setDouble(2, latitude);
-    st.setDouble(3, longitude);
-
-    st.executeUpdate();
   }
 
   // Applying a number of Regex, get only the words in a tweet text as a list
@@ -153,22 +135,5 @@ public class TwitterSentimentAnalyzer {
       score += sentiWordNet.extract(word);
     }
     return score / words.size();
-  }
-
-  //Establish DB connection
-  //TODO: need to use a file instead of a DB, due to memory limit on free-tier Amazon EC2 machine. (can't run Spark there)
-  public static Connection getDBConnection(String hostname, String user, String password) {
-    try {
-      MysqlDataSource dataSource = new MysqlDataSource();
-      dataSource.setUser(user);
-      dataSource.setPassword(password);
-      dataSource.setServerName(hostname);
-
-      return dataSource.getConnection();
-    } catch (SQLException e) {
-      // handle any errors
-      System.err.println("SQLException: " + e);
-    }
-    return null;
   }
 }
