@@ -12,6 +12,7 @@ import java.util.Arrays;
 import java.util.List;
 
 import org.apache.spark.SparkConf;
+import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.streaming.Seconds;
 import org.apache.spark.streaming.api.java.JavaDStream;
@@ -20,16 +21,26 @@ import org.apache.spark.streaming.api.java.JavaReceiverInputDStream;
 import org.apache.spark.streaming.api.java.JavaStreamingContext;
 import org.apache.spark.streaming.twitter.TwitterUtils;
 
+import org.apache.log4j.Logger;
+import org.apache.log4j.Level;
+
+
 import com.google.common.io.Files;
 
 /**
- * Author: eric, Date created: 3/20/16
+ * Author: Eric Na (hyunwoo.na@gmail.com), Date created: 3/20/16
+ * Creates a stream using Twitter Streaming API, calculates the sentiment score of each tweet,
+ * and writes the sentiment score and geo-location of the author to a file.
  */
 public class TwitterSentimentAnalyzer {
+
   private static SentiWordNet sentiWordNet = new SentiWordNet();
   private static final String englishIsoLanguageCode = "en";
+  private static int streamBatchDurationInSec = 600; //receive data at 600 second intervals in batches
 
   public static void main(String[] args) {
+    Logger.getLogger("org").setLevel(Level.OFF);
+    Logger.getLogger("akka").setLevel(Level.OFF);
     if (args.length < 2) {
       System.err.println("Usage: TwitterSentimentAnalyzer <Path to twitter credential file> <Output file path>");
       System.exit(1);
@@ -39,15 +50,19 @@ public class TwitterSentimentAnalyzer {
     TwitterConfigUtil.setTwitterConfig(twitterCredentialFilePath);
     String outputFilePath = args[1];
 
-    SparkConf conf = new SparkConf().setAppName("TwitterHashtagCollector").setMaster("local[*]");
+    SparkConf conf = new SparkConf().setAppName("TwitterSentimentAnalyzer").setMaster("local[*]");
     JavaSparkContext sc = new JavaSparkContext(conf);
-    final JavaStreamingContext jssc = new JavaStreamingContext(sc, Seconds.apply(300));
+    final JavaStreamingContext jssc = new JavaStreamingContext(sc, Seconds.apply(streamBatchDurationInSec));
 
     JavaReceiverInputDStream<Status> twitterStream = TwitterUtils.createStream(jssc);
 
     File file = new File(outputFilePath);
 
-    getScoreAndWriteToFile(twitterStream, file);
+    JavaPairDStream<Double, GeoLocation> sentimentScoreAndGeoLocations = getSentimentScoreAndGeoLocations(twitterStream);
+
+    sentimentScoreAndGeoLocations.foreachRDD(rdd -> {
+      writeScoreAndGeoLocationToFile(file, rdd);
+    });
 
     // handling the shut down gracefully
     Runtime.getRuntime().addShutdownHook(new Thread() {
@@ -63,34 +78,45 @@ public class TwitterSentimentAnalyzer {
 
   }
 
-  private static void getScoreAndWriteToFile(JavaReceiverInputDStream<Status> twitterStream, File file) {
-    //Filter out tweets that are not written in English, and tweets not posted in US
-    JavaDStream<Status> englishTweetsInUS = twitterStream
+  //Get score and write to file
+  public static JavaPairDStream<Double, GeoLocation> getSentimentScoreAndGeoLocations(
+      JavaReceiverInputDStream<Status> twitterStream) {
+    JavaDStream<Status> englishTweetsInUS = getTweetsWrittenInEnglish(twitterStream);
+    JavaPairDStream<List<String>, GeoLocation> wordsAndGeoLocationInTweets = getWordsAndGeoLocation(englishTweetsInUS);
+    return getScoreAndGeoLocation(wordsAndGeoLocationInTweets);
+  }
+
+  //calculate sentiment score from the lists of words, and map to a sentiment score and geo-location.
+  private static JavaPairDStream<Double, GeoLocation> getScoreAndGeoLocation(JavaPairDStream<List<String>, GeoLocation> wordsAndGeoLocationInTweets) {
+    return wordsAndGeoLocationInTweets
+        .mapToPair(wordsAndGeoLocation ->
+            new Tuple2<>(getSentimentScore(wordsAndGeoLocation._1), wordsAndGeoLocation._2));
+  }
+
+  //Filter out tweets that are not written in English, and tweets not posted in US
+  private static JavaDStream<Status> getTweetsWrittenInEnglish(JavaReceiverInputDStream<Status> twitterStream) {
+    return twitterStream
         .filter(status -> status.getGeoLocation() != null)
         .filter(status -> isRoughlyWithinUSAMainland(status.getGeoLocation()))
         .filter(status -> status.getLang().equals(englishIsoLanguageCode));
+  }
 
-    //map to lists of all words and the geo-location of author from each tweet.
-    JavaPairDStream<List<String>, GeoLocation> wordsAndGeoLocationInTweets = englishTweetsInUS
+  //map to lists of all words and the geo-location of author from each tweet.
+  private static JavaPairDStream<List<String>, GeoLocation> getWordsAndGeoLocation(JavaDStream<Status> tweets) {
+    return tweets
         .mapToPair(status -> new Tuple2<>(getAsWordsList(status.getText()), status.getGeoLocation()));
+  }
 
-    //calculate sentiment score from the lists of words, and map to a sentiment score and geo-location.
-    JavaPairDStream<Double, GeoLocation> scoreAndGeoLocation = wordsAndGeoLocationInTweets
-        .mapToPair(wordsAndGeoLocation ->
-            new Tuple2<>(getSentimentScore(wordsAndGeoLocation._1), wordsAndGeoLocation._2));
-
-
-    //write the result to database or file
-    scoreAndGeoLocation.foreachRDD(rdd -> {
-      rdd.foreach(tuple -> {
-        try {
-          // write score and location to the end of file
-          Files.append(tuple._1 + "," + tuple._2.getLatitude() + "," + tuple._2.getLongitude() + "\n",
-              file, Charset.forName("UTF-8"));
-        } catch (IOException e) {
-          System.err.println("error while writing output to file");
-        }
-      });
+  //write the result to database or file
+  private static void writeScoreAndGeoLocationToFile(File file, JavaPairRDD<Double, GeoLocation> rdd) {
+    rdd.foreach(tuple -> {
+      try {
+        // write score and location to the end of file
+        Files.append(tuple._1 + "," + tuple._2.getLatitude() + "," + tuple._2.getLongitude() + "\n",
+            file, Charset.forName("UTF-8"));
+      } catch (IOException e) {
+        System.err.println("error while writing output to file" + e);
+      }
     });
   }
 
