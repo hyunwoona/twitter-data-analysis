@@ -1,9 +1,7 @@
-package sentiment;
-
 import scala.Tuple2;
+import sentiment.SentiWordNet;
 import twitter4j.GeoLocation;
 import twitter4j.Status;
-import util.TwitterConfigUtil;
 
 import java.io.File;
 import java.io.IOException;
@@ -11,18 +9,14 @@ import java.nio.charset.Charset;
 import java.util.Arrays;
 import java.util.List;
 
-import org.apache.spark.SparkConf;
+import util.TwitterStreamUtils;
+
 import org.apache.spark.api.java.JavaPairRDD;
-import org.apache.spark.api.java.JavaSparkContext;
-import org.apache.spark.streaming.Seconds;
 import org.apache.spark.streaming.api.java.JavaDStream;
 import org.apache.spark.streaming.api.java.JavaPairDStream;
 import org.apache.spark.streaming.api.java.JavaReceiverInputDStream;
 import org.apache.spark.streaming.api.java.JavaStreamingContext;
 import org.apache.spark.streaming.twitter.TwitterUtils;
-
-import org.apache.log4j.Logger;
-import org.apache.log4j.Level;
 
 
 import com.google.common.io.Files;
@@ -36,46 +30,31 @@ public class TwitterSentimentAnalyzer {
 
   private static SentiWordNet sentiWordNet = new SentiWordNet();
   private static final String englishIsoLanguageCode = "en";
-  private static int streamBatchDurationInSec = 600; //receive data at 600 second intervals in batches
+  private static int streamBatchDurationInSec = 60; //receive data at 600 second intervals in batches
 
+  //args[0]: full path to a textfile that contains a twitter login. See twitter4j.properties.template
+  //args[1]: full path to a textfile to write sentiment analysis output to
   public static void main(String[] args) {
-    Logger.getLogger("org").setLevel(Level.OFF);
-    Logger.getLogger("akka").setLevel(Level.OFF);
-    if (args.length < 2) {
+    if (args.length != 2) {
       System.err.println("Usage: TwitterSentimentAnalyzer <Path to twitter credential file> <Output file path>");
       System.exit(1);
     }
-
     String twitterCredentialFilePath = args[0];
-    TwitterConfigUtil.setTwitterConfig(twitterCredentialFilePath);
     String outputFilePath = args[1];
 
-    SparkConf conf = new SparkConf().setAppName("TwitterSentimentAnalyzer").setMaster("local[*]");
-    JavaSparkContext sc = new JavaSparkContext(conf);
-    final JavaStreamingContext jssc = new JavaStreamingContext(sc, Seconds.apply(streamBatchDurationInSec));
-
+    //create Spark Streaming context, and get a stream of Twitter Status
+    final JavaStreamingContext jssc = TwitterStreamUtils.getJavaStreamingContext("TwitterSentimentAnalyzer",
+                                                                   twitterCredentialFilePath, streamBatchDurationInSec);
     JavaReceiverInputDStream<Status> twitterStream = TwitterUtils.createStream(jssc);
 
-    File file = new File(outputFilePath);
-
+    //get <sentiment score, geolocation> pairs and write them to file
     JavaPairDStream<Double, GeoLocation> sentimentScoreAndGeoLocations = getSentimentScoreAndGeoLocations(twitterStream);
-
     sentimentScoreAndGeoLocations.foreachRDD(rdd -> {
-      writeScoreAndGeoLocationToFile(file, rdd);
+      writeScoreAndGeoLocationToFile(new File(outputFilePath), rdd);
     });
 
-    // handling the shut down gracefully
-    Runtime.getRuntime().addShutdownHook(new Thread() {
-      @Override
-      public void run() {
-        System.out.println("Shutting down streaming app...");
-        jssc.stop(true, true);
-        System.out.println("Shutdown of streaming app complete.");
-      }
-    });
-    jssc.start(); // Start the computation
-    jssc.awaitTermination();
-
+    //start computation and wait for termination
+    TwitterStreamUtils.startAndWaitTermination(jssc);
   }
 
   //Get score and write to file
@@ -86,13 +65,6 @@ public class TwitterSentimentAnalyzer {
     return getScoreAndGeoLocation(wordsAndGeoLocationInTweets);
   }
 
-  //calculate sentiment score from the lists of words, and map to a sentiment score and geo-location.
-  private static JavaPairDStream<Double, GeoLocation> getScoreAndGeoLocation(JavaPairDStream<List<String>, GeoLocation> wordsAndGeoLocationInTweets) {
-    return wordsAndGeoLocationInTweets
-        .mapToPair(wordsAndGeoLocation ->
-            new Tuple2<>(getSentimentScore(wordsAndGeoLocation._1), wordsAndGeoLocation._2));
-  }
-
   //Filter out tweets that are not written in English, and tweets not posted in US
   private static JavaDStream<Status> getTweetsWrittenInEnglish(JavaReceiverInputDStream<Status> twitterStream) {
     return twitterStream
@@ -101,10 +73,17 @@ public class TwitterSentimentAnalyzer {
         .filter(status -> status.getLang().equals(englishIsoLanguageCode));
   }
 
+  //calculate sentiment score from the lists of words, and map to a sentiment score and geo-location.
+  private static JavaPairDStream<Double, GeoLocation> getScoreAndGeoLocation(
+      JavaPairDStream<List<String>, GeoLocation> wordsAndGeoLocationInTweets) {
+
+    return wordsAndGeoLocationInTweets.mapToPair(wordsAndGeoLocation ->
+            new Tuple2<>(getSentimentScore(wordsAndGeoLocation._1), wordsAndGeoLocation._2));
+  }
+
   //map to lists of all words and the geo-location of author from each tweet.
   private static JavaPairDStream<List<String>, GeoLocation> getWordsAndGeoLocation(JavaDStream<Status> tweets) {
-    return tweets
-        .mapToPair(status -> new Tuple2<>(getAsWordsList(status.getText()), status.getGeoLocation()));
+    return tweets.mapToPair(status -> new Tuple2<>(getAsWordsList(status.getText()), status.getGeoLocation()));
   }
 
   //write the result to database or file

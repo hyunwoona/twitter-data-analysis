@@ -69,7 +69,6 @@ public class SentiWordNet {
     }
   }
 
-  //from http://stackoverflow.com/a/15653183/2418202
   public Double extract(String word) {
     Double total = new Double(0);
     int count = 0;

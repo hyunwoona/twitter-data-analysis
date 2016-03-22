@@ -1,22 +1,15 @@
 import scala.Tuple2;
-import sentiment.SentiWordNet;
-import twitter4j.GeoLocation;
 import twitter4j.Status;
-import util.TwitterConfigUtil;
+import util.TwitterStreamUtils;
 
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.Charset;
 import java.util.Arrays;
-import java.util.EnumSet;
 import java.util.List;
 import java.util.stream.Collectors;
 
-import org.apache.log4j.Level;
-import org.apache.log4j.Logger;
-import org.apache.spark.SparkConf;
 import org.apache.spark.api.java.JavaPairRDD;
-import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.streaming.Minutes;
 import org.apache.spark.streaming.Seconds;
 import org.apache.spark.streaming.api.java.JavaDStream;
@@ -35,81 +28,50 @@ import com.google.common.io.Files;
  * Author: Eric Na (hyunwoo.na@gmail.com), Date created: 3/18/16
  * Creates a stream using Twitter Streaming API, gets top hashtags and tweets, and writes to a file.
  */
-public class TwitterDataCollector {
-  private enum TwitterDataType {
-    HASHTAGS, TWEETS, SENTIMENT_SCORES;
-  }
+public class TopTweetAndHashtagCollector {
 
-  private static SentiWordNet sentiWordNet = new SentiWordNet();
-  private static final String englishIsoLanguageCode = "en";
   private static final DateTimeFormatter dateTimeFormat = DateTimeFormat.forPattern("MM/dd/yyyy HH:mm:ss");
   private static final String timeZoneId = "America/Los_Angeles";
-  private static int streamBatchDurationInSec = 60; //receive data at 60 second intervals in batches
+  private static int streamBatchDurationInSec = 60; //receive data at 60 second intervals
   private static int windowDurationInSec = 300; //Top hashtags and tweets in 5 minutes
-
-  //write top 25 hashtags and top 3 tweets to {file}
+  //output top 25 hashtags and top 3 tweets
   private static final int numTopHashtags = 25;
   private static final int numTopTweets = 3;
 
-  private static final EnumSet<TwitterDataType> dataTypesToCollect =
-      EnumSet.of(TwitterDataType.HASHTAGS, TwitterDataType.TWEETS);
   //args[0]: full path to a textfile that contains a twitter login. See twitter4j.properties.template
   //args[1]: full path to a textfile to write hashtags and tweets to
   public static void main(String[] args) {
-    Logger.getLogger("org").setLevel(Level.OFF);
-    Logger.getLogger("akka").setLevel(Level.OFF);
+    //Logger.getLogger("org").setLevel(Level.OFF);
+    //Logger.getLogger("akka").setLevel(Level.OFF);
 
-    if (args.length < 2) {
-      System.err.println("Usage: TwitterDataCollector <Path to twitter credential file> " +
-          "<Top Hashtags and Tweets output file path> <Sentiment score output file path>");
+    if (args.length != 2) {
+      System.err.println("Usage: TopTweetAndHashtagCollector <Path to twitter credential file> <Output file path>");
       System.exit(1);
     }
-
-    SparkConf conf = new SparkConf().setAppName("TwitterDataCollector").setMaster("local[*]");
     String twitterCredentialFilePath = args[0];
-    TwitterConfigUtil.setTwitterConfig(twitterCredentialFilePath);
     String hashtagAndTweetOutputFilePath = args[1];
-    JavaSparkContext sc = new JavaSparkContext(conf);
-    final JavaStreamingContext jssc = new JavaStreamingContext(sc, Seconds.apply(streamBatchDurationInSec));
 
+    //create Spark Streaming context, and get a stream of Twitter Status
+    final JavaStreamingContext jssc = TwitterStreamUtils.getJavaStreamingContext("TopTweetAndHashtagCollector",
+        twitterCredentialFilePath, streamBatchDurationInSec);
     JavaReceiverInputDStream<Status> twitterStream = TwitterUtils.createStream(jssc);
 
-    File hashtagAndTweetOutputFile = new File(hashtagAndTweetOutputFilePath);
-    if (dataTypesToCollect.contains(TwitterDataType.HASHTAGS)) {
-      JavaPairDStream<Long, String> topHashtagsDescendingOrdered = getTopHashtags(twitterStream);
-      topHashtagsDescendingOrdered.foreachRDD(rdd -> {
-        writeTopHashtagsToFile(hashtagAndTweetOutputFile, numTopHashtags, rdd);
-      });
-    }
+    File hashtagAndTweetOutputFile = new File(hashtagAndTweetOutputFilePath); //output file
 
-    if (dataTypesToCollect.contains(TwitterDataType.TWEETS)) {
-      JavaPairDStream<Integer, String> topTweetsDescendingOrdered = getMostRetweetedTweets(twitterStream);
-      topTweetsDescendingOrdered.foreachRDD(rdd -> {
-        writeTopTweetsToFile(hashtagAndTweetOutputFile, numTopTweets, rdd);
-      });
-    }
-
-    if (dataTypesToCollect.contains(TwitterDataType.SENTIMENT_SCORES) && args.length == 3) {
-      String sentimentScoreOutputFilePath = args[2];
-      File sentimentScoreOutputFile = new File(sentimentScoreOutputFilePath);
-
-      JavaPairDStream<Double, GeoLocation> sentimentScoreAndGeoLocations = getSentimentScoreAndGeoLocations(twitterStream);
-      sentimentScoreAndGeoLocations.foreachRDD(rdd -> {
-        writeScoreAndGeoLocationToFile(sentimentScoreOutputFile, rdd);
-      });
-    }
-
-    // handling the shut down gracefully
-    Runtime.getRuntime().addShutdownHook(new Thread() {
-      @Override
-      public void run() {
-        System.out.println("Shutting down streaming app...");
-        jssc.stop(true, true);
-        System.out.println("Shutdown of streaming app complete.");
-      }
+    //get <hashtag count, hashtag> pairs, and write the top {numTopHashtags} to file
+    JavaPairDStream<Long, String> topHashtagsDescendingOrdered = getTopHashtags(twitterStream);
+    topHashtagsDescendingOrdered.foreachRDD(rdd -> {
+      writeTopHashtagsToFile(hashtagAndTweetOutputFile, numTopHashtags, rdd);
     });
-    jssc.start(); // Start the computation
-    jssc.awaitTermination();
+
+    //get <retweet count, tweet text> pairs, and write the top {numTopTweets} to file
+    JavaPairDStream<Integer, String> topTweetsDescendingOrdered = getMostRetweetedTweets(twitterStream);
+    topTweetsDescendingOrdered.foreachRDD(rdd -> {
+      writeTopTweetsToFile(hashtagAndTweetOutputFile, numTopTweets, rdd);
+    });
+
+    //start computation and wait for termination
+    TwitterStreamUtils.startAndWaitTermination(jssc);
   }
 
   //-Methods below are methods for top hashtags
@@ -183,7 +145,7 @@ public class TwitterDataCollector {
     return sortByDescendingRetweetCount(retweetCountAndText);
   }
 
-  //get <retweet count, tweet text> pairs from twitter status. Remove newline from text
+  //get <retweet count, tweet text> pairs from twitter status. Also remove newline from text
   private static JavaPairDStream<Integer, String> getCountAndText(JavaDStream<Status> retweetedTweets) {
     return retweetedTweets.mapToPair(status ->
         new Tuple2<>(status.getRetweetedStatus().getRetweetCount(), status.getText().replace("\n", " ")));
@@ -215,92 +177,5 @@ public class TwitterDataCollector {
     });
     Files.append("----------------------------------------------\n",
         file, Charset.forName("UTF-8"));
-  }
-
-  //-Methods below are methods for sentiment analysis
-
-  //Get score and write to file
-  public static JavaPairDStream<Double, GeoLocation> getSentimentScoreAndGeoLocations(
-      JavaReceiverInputDStream<Status> twitterStream) {
-    JavaDStream<Status> englishTweetsInUS = getTweetsWrittenInEnglish(twitterStream);
-    JavaPairDStream<List<String>, GeoLocation> wordsAndGeoLocationInTweets = getWordsAndGeoLocation(englishTweetsInUS);
-    return getScoreAndGeoLocation(wordsAndGeoLocationInTweets);
-  }
-
-  //calculate sentiment score from the lists of words, and map to a sentiment score and geo-location.
-  private static JavaPairDStream<Double, GeoLocation> getScoreAndGeoLocation(JavaPairDStream<List<String>, GeoLocation> wordsAndGeoLocationInTweets) {
-    return wordsAndGeoLocationInTweets
-        .mapToPair(wordsAndGeoLocation ->
-            new Tuple2<>(getSentimentScore(wordsAndGeoLocation._1), wordsAndGeoLocation._2));
-  }
-
-  //Filter out tweets that are not written in English, and tweets not posted in US
-  private static JavaDStream<Status> getTweetsWrittenInEnglish(JavaReceiverInputDStream<Status> twitterStream) {
-    return twitterStream
-        .filter(status -> status.getGeoLocation() != null)
-        .filter(status -> isRoughlyWithinUSAMainland(status.getGeoLocation()))
-        .filter(status -> status.getLang().equals(englishIsoLanguageCode));
-  }
-
-  //map to lists of all words and the geo-location of author from each tweet.
-  private static JavaPairDStream<List<String>, GeoLocation> getWordsAndGeoLocation(JavaDStream<Status> tweets) {
-    return tweets
-        .mapToPair(status -> new Tuple2<>(getAsWordsList(status.getText()), status.getGeoLocation()));
-  }
-
-  //write the result to database or file
-  private static void writeScoreAndGeoLocationToFile(File file, JavaPairRDD<Double, GeoLocation> rdd) {
-    rdd.foreach(tuple -> {
-      try {
-        // write score and location to the end of file
-        Files.append(tuple._1 + "," + tuple._2.getLatitude() + "," + tuple._2.getLongitude() + "\n",
-            file, Charset.forName("UTF-8"));
-      } catch (IOException e) {
-        System.err.println("error while writing output to file" + e);
-      }
-    });
-  }
-
-  // Applying a number of Regex, get only the words in a tweet text as a list
-  private static List<String> getAsWordsList(String text) {
-    final String urlRegex = "\\b(https?|ftp|file)://[-a-zA-Z0-9+&@#/%?=~_|!:,.;]*[-a-zA-Z0-9+&@#/%=~_|]";
-    final String nonWordRegex = "@\\w*|#\\w*|\\bRT\\b|[^@#\\p{L}\\p{N} ]+";
-    final String contractionRegex = "\'s|\'m|\'re|\'ve";
-
-    return Arrays.asList(
-        text.replaceAll(contractionRegex, "")
-            .replaceAll(urlRegex, "")
-            .replaceAll(nonWordRegex, "")
-            .trim().split("[ \n\t]"));
-  }
-
-  // Very roughly determines whether a geo-location falls within USA mainland boundary.
-  // More accurate filtering will be applied on the client code.
-  private static boolean isRoughlyWithinUSAMainland(GeoLocation geoLocation) {
-    if (geoLocation == null) {
-      return false;
-    }
-    final double westBoundingCoordinate = -125.0;
-    final double eastBoundingCoordinate = -67.0;
-    final double northBoundingCoordinate = 49.0;
-    final double southBoundingCoordinate = 25.5;
-
-    double latitude = geoLocation.getLatitude();
-    double longitude = geoLocation.getLongitude();
-
-    return southBoundingCoordinate <= latitude && latitude <= northBoundingCoordinate &&
-        westBoundingCoordinate <= longitude && longitude <= eastBoundingCoordinate;
-  }
-
-  //Calculate sentiment score of a list of words in a text, using sentiWordNet.
-  private static double getSentimentScore(List<String> words) {
-    if (words.isEmpty()) {
-      return 0;
-    }
-    double score = 0d;
-    for (String word : words) {
-      score += sentiWordNet.extract(word);
-    }
-    return score / words.size();
   }
 }
