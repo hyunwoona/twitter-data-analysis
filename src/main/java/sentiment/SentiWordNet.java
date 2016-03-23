@@ -14,7 +14,7 @@ import java.util.Vector;
  * 1 means strongly positive, 0 means neutral, -1 means strongly negative.
  */
 public class SentiWordNet {
-  private URL pathToSWN = this.getClass().getClassLoader().getResource("SentiWordNet_3.0.0.txt");
+  private URL pathToSWN = this.getClass().getClassLoader().getResource("sentiment/SentiWordNet_3.0.0.txt");
   private HashMap<String, Double> _dict;
 
   //Initialize a dictionary that maps a word to its score
