@@ -33,9 +33,9 @@ If you need these keys, please refer to [How to get API Keys and Tokens for Twit
 
 Dependencies are contained in pom.xml
 
-Some sample output files from `TopTweetAndHashtagCollector`: [Top Tweet and Hashtags 1](https://github.com/hyunwoona/yewno-data-assignment/blob/master/src/main/resources/top_hashtags_and_tweets_20160320_234002.txt) [Top Tweet and Hashtags 2](https://github.com/hyunwoona/yewno-data-assignment/blob/master/src/main/resources/top_hashtags_and_tweets_20160321_185101.txt) [Top Tweet and Hashtags 3](https://github.com/hyunwoona/yewno-data-assignment/blob/master/src/main/resources/top_hashtags_and_tweets_20160322_122900.txt).
+Some sample output files from `TopTweetAndHashtagCollector`: [Top Tweet and Hashtags 1](https://github.com/hyunwoona/yewno-data-assignment/blob/master/src/main/resources/top_hashtags_and_tweets_20160320_234002.txt), [Top Tweet and Hashtags 2](https://github.com/hyunwoona/yewno-data-assignment/blob/master/src/main/resources/top_hashtags_and_tweets_20160321_185101.txt), [Top Tweet and Hashtags 3](https://github.com/hyunwoona/yewno-data-assignment/blob/master/src/main/resources/top_hashtags_and_tweets_20160322_122900.txt).
 
-Some sample output files from `TwitterSentimentAnalyzer`: [200_lines](https://github.com/hyunwoona/yewno-data-assignment/blob/master/src/main/resources/sentiment/sample_sentiment_output_lines.csv) [3000_lines](https://github.com/hyunwoona/yewno-data-assignment/blob/master/src/main/resources/sentiment/sample_sentiment_3000_lines.csv).
+Some sample output files from `TwitterSentimentAnalyzer`: [200_lines](https://github.com/hyunwoona/yewno-data-assignment/blob/master/src/main/resources/sentiment/sample_sentiment_output_lines.csv), [3000_lines](https://github.com/hyunwoona/yewno-data-assignment/blob/master/src/main/resources/sentiment/sample_sentiment_3000_lines.csv).
 
 ###get_sentiment_by_state.py
 
