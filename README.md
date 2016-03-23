@@ -1,4 +1,4 @@
-#ABCDEF
+#Top Tweets, Hashtags, and Sentiments using Twitter Streaming API and Spark
 
 ##Main Projects
 Two main programs, [TopTweetAndHashtagCollector](https://github.com/hyunwoona/yewno-data-assignment/blob/master/src/main/java/TopTweetAndHashtagCollector.java) and 
@@ -33,7 +33,7 @@ If you need these keys, please refer to [How to get API Keys and Tokens for Twit
 
 Dependencies are contained in pom.xml
 
-Some sample output files from `TopTweetAndHashtagCollector`: [1](https://github.com/hyunwoona/yewno-data-assignment/blob/master/src/main/resources/top_hashtags_And_tweets_2016032_234002.txt) [2](https://github.com/hyunwoona/yewno-data-assignment/blob/master/src/main/resources/top_hashtags_And_tweets_2016032_185101.txt) [3](https://github.com/hyunwoona/yewno-data-assignment/blob/master/src/main/resources/top_hashtags_And_tweets_2016032_122900.txt).
+Some sample output files from `TopTweetAndHashtagCollector`: [Top Tweet and Hashtags 1](https://github.com/hyunwoona/yewno-data-assignment/blob/master/src/main/resources/top_hashtags_And_tweets_2016032_234002.txt) [Top Tweet and Hashtags 2](https://github.com/hyunwoona/yewno-data-assignment/blob/master/src/main/resources/top_hashtags_And_tweets_2016032_185101.txt) [Top Tweet and Hashtags 3](https://github.com/hyunwoona/yewno-data-assignment/blob/master/src/main/resources/top_hashtags_And_tweets_2016032_122900.txt).
 
 Some sample output files from `TwitterSentimentAnalyzer`: [200_lines](https://github.com/hyunwoona/yewno-data-assignment/blob/master/src/main/resources/sentiment/sample_sentiment_output_lines.csv) [3000_lines](https://github.com/hyunwoona/yewno-data-assignment/blob/master/src/main/resources/sentiment/sample_sentiment_3000_lines.csv).
 
